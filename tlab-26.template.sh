@@ -2,14 +2,22 @@
 # =============================================================================
 #  TLab-26 — Ambiente Debian (proot-distro) pronto para uso no Termux
 # -----------------------------------------------------------------------------
-#  Uso:        bash tlab-26.sh
-#  Assets:     coloque font.ttf e termux.properties na mesma pasta do script
-#              (ou em ./assets/), ou exporte TLAB_ASSETS_URL=<url base>.
+#  Uso:        bash tlab26-tx.sh
+#  Repo:       https://github.com/TermuxLab-Nexus/TLab26-termux
+#  Fonte:      font.ttf (JetBrainsMono Nerd Font) do repositório acima; se estiver
+#              ao lado do script (ou em ./assets/) é usada direto. Se falhar, cai
+#              para a release oficial de github.com/ryanoasis/nerd-fonts.
+#  Assets:     termux.properties opcional (mesma pasta, ./assets/ ou no repositório);
+#              troque a origem com TLAB_ASSETS_URL=<url base>.
 #
 #  O script roda em DOIS ESTÁGIOS, usando este mesmo arquivo:
-#    1) Termux  -> pacotes, tema, fish, proot-distro, GitHub, desktop (lado X11)
+#    1) Termux  -> pacotes mínimos, tema, fonte, fish, proot-distro, GitHub, desktop (lado X11)
 #    2) Debian  -> usuário, sudo, SSH, linguagens, editores, ngrok, LXDE
 #  O estágio 2 é chamado automaticamente (--proot-stage); não rode à mão.
+#
+#  Regra de instalação no Debian: SEMPRE `apt install` primeiro.
+#  Só se o pacote não existir no apt (ou o comando continuar ausente) é que
+#  ele é baixado de uma fonte externa.
 # =============================================================================
 
 set -uo pipefail
@@ -18,15 +26,18 @@ set -uo pipefail
 # CONSTANTES (todas readonly)
 # -----------------------------------------------------------------------------
 readonly TLAB_NAME="TLab-26"
-readonly TLAB_VERSION="2.0.0"
+readonly TLAB_VERSION="2.2.0"
 readonly DISTRO="debian"
 readonly SSH_PORT=8122
 readonly FISH_PROOT="/usr/bin/fish"
-readonly ASSETS_URL="${TLAB_ASSETS_URL:-}"
+readonly REPO_RAW="https://raw.githubusercontent.com/TermuxLab-Nexus/TLab26-termux/main"
+readonly ASSETS_URL="${TLAB_ASSETS_URL:-$REPO_RAW}"
 readonly TTY_IN="${TLAB_TTY:-/dev/tty}"
 readonly INPUT_FD=3
 
 readonly DRACULA_URL="https://raw.githubusercontent.com/dracula/termux/master/colors.properties"
+readonly NERD_FONT_URL="https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.tar.xz"
+readonly NERD_FONT_GLOB="JetBrainsMonoNLNerdFontMono-Regular.ttf"
 readonly NGROK_URL_BASE="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux"
 readonly HELIX_RELEASES="https://github.com/helix-editor/helix/releases"
 readonly FASTFETCH_RELEASES="https://github.com/fastfetch-cli/fastfetch/releases/latest/download"
@@ -34,17 +45,20 @@ readonly TERMUX_X11_RELEASES="https://github.com/termux/termux-x11/releases"
 readonly GITHUB_NEW_KEY_URL="https://github.com/settings/ssh/new"
 
 readonly ANSWERS_NAME=".tlab-answers"
-readonly SCRIPT_COPY_NAME="tlab-26.sh"
+readonly SCRIPT_COPY_NAME="tlab26-tx.sh"
 readonly BLOCK_PREFIX="TLab-26"
 
 readonly APT_OPTS=(-o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef)
 
-readonly TERMUX_BASE_PKGS=(curl wget git openssh fish vim micro helix tree htop fastfetch proot-distro)
-readonly TERMUX_LANG_PKGS=(rust golang python python-pip nodejs-lts)
+# Termux: só o necessário para montar o ambiente (o resto vem do apt do Debian)
+readonly TERMUX_BASE_PKGS=(curl git openssh fish proot-distro xz-utils)
+
+# Debian: tudo via apt; o que faltar no apt cai nos fallbacks externos
 readonly DEBIAN_CORE_PKGS=(sudo curl wget ca-certificates git openssh-client openssh-server
-    fish vim micro tree htop unzip xz-utils less procps iproute2 build-essential pkg-config libssl-dev)
-readonly DEBIAN_LANG_PKGS=(python3 python3-pip python3-venv pipx python-is-python3 nodejs npm golang-go)
-readonly DEBIAN_OPTIONAL_PKGS=(fastfetch helix)
+    fish vim micro tmux tree htop unzip xz-utils less procps iproute2 build-essential pkg-config libssl-dev)
+readonly DEBIAN_LANG_PKGS=(python3 python3-pip python3-venv pipx python-is-python3 nodejs npm golang-go
+    rustc cargo rustfmt rust-clippy rust-analyzer)
+readonly DEBIAN_TOOL_PKGS=(fastfetch hx ngrok)   # no Debian o Helix se chama "hx"
 readonly DEBIAN_DESKTOP_PKGS=(lxde dbus-x11)
 
 # Caminho do próprio script (vazio se rodando via pipe/curl | bash)
@@ -78,17 +92,41 @@ SETUP_GITHUB="no"
 GIT_USER=""
 GIT_EMAIL=""
 NGROK_TOKEN=""
-LANGS_TERMUX="no"
 INSTALL_DESKTOP="no"
 
 # =============================================================================
 # DADOS EMBUTIDOS (heredocs)
 # =============================================================================
 
-# Logo do fastfetch (arte gerada a partir do logo oficial; $1 = cor 1)
+# Logo do fastfetch (arte de terminal gerada do PNG oficial do repositório)
 emit_logo() {
     cat <<'TLAB_LOGO_EOF'
-__TLAB_LOGO__
+                      ▄▄
+                     ▄██▄
+                    █████▄
+                   ████████
+                  ██████████
+                 ████████████
+ ████▄▄▄▄▄      ▀████████████▀      ▄▄▄▄▄████
+  ████████████    ██████████    ███████████▀
+   ▀███████████▄   ████████   ▄███████████▀
+    ▀███████████▄   ▀████▀   ▄███████████▀
+      ███████████▄   ▀██▀   ▄███████████
+       ▀███████████   ▀▀   ███████████▀
+             ▀▀▀▀▀▀▀      ▀▀▀▀▀▀▀
+                   ▄      ▄
+        ▄▄▄▄███████▀      ▀███████▄▄▄▄
+      ▄███████████    ██    ███████████▄
+     ▄██████████▀   ▄████    ▀██████████▄
+    ███████████▀   ▄██████▄   ▀███████████
+  ▄███████████    ▄████████▄   ▀███████████▄
+ ▄████▀▀▀▀▀      ███████████▄      ▀▀▀▀▀████▄
+                ▀████████████▀
+                 ▀██████████▀
+                  ▀████████
+                    ██████
+                     ███▀
+                      ▀▀
 TLAB_LOGO_EOF
 }
 
@@ -458,6 +496,13 @@ apt_install() {
     DEBIAN_FRONTEND=noninteractive apt-get install ${YES_FLAG:+"$YES_FLAG"} "${APT_OPTS[@]}" "$@"
 }
 
+# apt_available <pacote>  -> 0 se o apt do Debian tem o pacote
+apt_available() {
+    local cand
+    cand="$(apt-cache policy "$1" 2>/dev/null | awk '/Candidate:/{print $2; exit}')"
+    [[ -n "$cand" && "$cand" != "(none)" ]]
+}
+
 # install_many <função-instaladora> <pacotes...>
 # Tenta em lote; se falhar, instala um a um e avisa o que não foi possível.
 install_many() {
@@ -472,6 +517,22 @@ install_many() {
     return 0
 }
 
+# apt_install_many <pacotes...>
+# Instala pelo apt tudo que o repositório do Debian tem; o que não existir
+# é apenas avisado (os fallbacks externos cuidam desses depois).
+apt_install_many() {
+    local pkgs=() p
+    for p in "$@"; do
+        if apt_available "$p"; then
+            pkgs+=("$p")
+        else
+            info "'${p}' não existe no apt do Debian; ficará para a fonte externa."
+        fi
+    done
+    (( ${#pkgs[@]} == 0 )) || install_many apt_install "${pkgs[@]}"
+    return 0
+}
+
 # =============================================================================
 # UTILS — fish (blocos de configuração compartilhados pelo Termux e pelo Debian)
 # =============================================================================
@@ -479,7 +540,7 @@ install_many() {
 # fish_base_content <termux|proot>
 fish_base_content() {
     cat <<'EOF'
-set -gx EDITOR micro
+command -q micro; and set -gx EDITOR micro
 set -gx GOPATH $HOME/go
 fish_add_path -g $HOME/.local/bin $HOME/.cargo/bin $HOME/go/bin $HOME/.npm-global/bin
 function fish_greeting
@@ -600,9 +661,6 @@ termux_collect_inputs() {
     info "O authtoken do ngrok fica em https://dashboard.ngrok.com/get-started/your-authtoken"
     ask_secret NGROK_TOKEN "Authtoken do ngrok (digitação oculta; Enter para pular)"
 
-    confirm "Instalar também Rust/Go/Python/Node no Termux puro? (ocupa ~1,5 GB a mais)" N \
-        && LANGS_TERMUX="yes"
-
     printf '\n%sDesktop gráfico (LXDE):%s recomendado apenas para aparelhos com 4 GB de RAM ou mais.\n' \
         "$C_BOLD" "$C_RST"
     confirm "Instalar o desktop LXDE no Debian?" N && INSTALL_DESKTOP="yes"
@@ -622,7 +680,7 @@ termux_update_system() {
 }
 
 termux_install_base() {
-    step "Pacotes base: ${TERMUX_BASE_PKGS[*]}"
+    step "Pacotes base do Termux: ${TERMUX_BASE_PKGS[*]}"
     install_many pkg_install "${TERMUX_BASE_PKGS[@]}"
     has_cmd fish || die "O fish não foi instalado; não dá para continuar."
     has_cmd proot-distro || die "O proot-distro não foi instalado; não dá para continuar."
@@ -644,16 +702,32 @@ termux_setup_storage() {
     warn "Permissão não confirmada. Rode 'termux-setup-storage' depois."
 }
 
+# Fonte: font.ttf do repositório TLab26 (JetBrainsMono Nerd Font);
+# se indisponível, baixa a release oficial do nerd-fonts.
+termux_install_font() {
+    local dest="$HOME/.termux/font.ttf" tmp
+    if fetch_asset font.ttf "$dest"; then
+        ok "Fonte JetBrainsMono Nerd Font aplicada (repositório TLab26)."
+        return 0
+    fi
+    warn "font.ttf do repositório indisponível; tentando a release do nerd-fonts..."
+    tmp="$(mktemp -d)" || return 1
+    if download "$NERD_FONT_URL" "$tmp/font.tar.xz" \
+        && tar -xJf "$tmp/font.tar.xz" -C "$tmp" "$NERD_FONT_GLOB"; then
+        install -m 644 "$tmp/$NERD_FONT_GLOB" "$dest"
+        ok "Fonte JetBrainsMono Nerd Font aplicada (nerd-fonts)."
+    else
+        warn "Não consegui baixar a fonte (${NERD_FONT_URL})."
+    fi
+    rm -rf "$tmp"
+}
+
 termux_apply_theme() {
     step "Fonte, tema Dracula e termux.properties"
     local dir="$HOME/.termux"
     mkdir -p "$dir"
 
-    if fetch_asset font.ttf "$dir/font.ttf"; then
-        ok "Fonte aplicada (~/.termux/font.ttf)."
-    else
-        warn "font.ttf não encontrada. Coloque-a ao lado do script ou use TLAB_ASSETS_URL."
-    fi
+    termux_install_font
 
     if download "$DRACULA_URL" "$dir/colors.properties"; then
         ok "Tema Dracula baixado."
@@ -682,17 +756,7 @@ termux_setup_fish() {
 end"
     upsert_block "$cfg" "base" "$(fish_base_content termux)
 ${ngrok_fn}" || die "Falha ao escrever ${cfg}."
-    setup_fastfetch "$HOME"
     ok "fish configurado."
-}
-
-termux_install_langs() {
-    [[ "$LANGS_TERMUX" == "yes" ]] || return 0
-    step "Linguagens no Termux: ${TERMUX_LANG_PKGS[*]}"
-    install_many pkg_install "${TERMUX_LANG_PKGS[@]}"
-    mkdir -p "$HOME/go/bin" "$HOME/.npm-global"
-    has_cmd npm && npm config set prefix "$HOME/.npm-global"
-    ok "Ambientes configurados (GOPATH, cargo, npm global, ~/.local/bin no PATH do fish)."
 }
 
 termux_install_debian() {
@@ -850,7 +914,6 @@ termux_main() {
     termux_setup_storage
     termux_apply_theme
     termux_setup_fish
-    termux_install_langs
     termux_install_debian
     termux_run_proot_stage
     termux_setup_github
@@ -869,24 +932,22 @@ as_user() {
     su -s /bin/bash - "$USERNAME" -c "$(printf '%q ' "$@")"
 }
 
+# Tudo vem do apt do Debian. O que o apt não tiver é tratado pelos fallbacks.
 proot_install_packages() {
-    step "Pacotes do Debian"
+    step "Pacotes do Debian (apt install)"
     export DEBIAN_FRONTEND=noninteractive
     apt-get update || die "apt-get update falhou."
     apt-get upgrade ${YES_FLAG:+"$YES_FLAG"} "${APT_OPTS[@]}" || warn "Upgrade com avisos."
-    install_many apt_install "${DEBIAN_CORE_PKGS[@]}"
-    install_many apt_install "${DEBIAN_LANG_PKGS[@]}"
-    local p
-    for p in "${DEBIAN_OPTIONAL_PKGS[@]}"; do
-        apt_install "$p" || info "Pacote opcional '${p}' indisponível no apt; vou tentar outro jeito."
-    done
+    apt_install_many "${DEBIAN_CORE_PKGS[@]}" "${DEBIAN_LANG_PKGS[@]}" "${DEBIAN_TOOL_PKGS[@]}"
     has_cmd fish || die "fish não foi instalado."
     has_cmd sudo || die "sudo não foi instalado."
 }
 
-proot_install_helix_fallback() {
+# --- Fallbacks: só rodam se o comando ainda não existe após o apt ------------
+
+proot_fallback_helix() {
     has_cmd hx && return 0
-    step "Helix (release oficial)"
+    step "Helix (fonte externa — não veio do apt)"
     local arch tag tmp
     arch="$(arch_map "$(uname -m)" helix)" || { warn "Helix: sem build para $(uname -m)."; return 0; }
     tag="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "${HELIX_RELEASES}/latest")"
@@ -906,9 +967,9 @@ proot_install_helix_fallback() {
     rm -rf "$tmp"
 }
 
-proot_install_fastfetch_fallback() {
+proot_fallback_fastfetch() {
     has_cmd fastfetch && return 0
-    step "fastfetch (release oficial)"
+    step "fastfetch (fonte externa — não veio do apt)"
     local arch tmp
     arch="$(arch_map "$(uname -m)" fastfetch)" || { warn "fastfetch: sem build para $(uname -m)."; return 0; }
     tmp="$(mktemp -d)" || return 0
@@ -920,6 +981,39 @@ proot_install_fastfetch_fallback() {
         warn "fastfetch: falha no download."
     fi
     rm -rf "$tmp"
+}
+
+proot_fallback_ngrok() {
+    has_cmd ngrok && return 0
+    step "ngrok (fonte externa — não existe no apt)"
+    local arch tmp
+    arch="$(arch_map "$(uname -m)" ngrok)" || { warn "ngrok: sem build para $(uname -m)."; return 0; }
+    tmp="$(mktemp -d)" || return 0
+    if download "${NGROK_URL_BASE}-${arch}.tgz" "$tmp/ngrok.tgz" \
+        && tar -xzf "$tmp/ngrok.tgz" -C /usr/local/bin ngrok; then
+        chmod 755 /usr/local/bin/ngrok
+        ok "ngrok instalado."
+    else
+        warn "ngrok: falha no download."
+    fi
+    rm -rf "$tmp"
+}
+
+# rustup só entra se o apt não entregou o cargo
+proot_fallback_rust() {
+    has_cmd cargo && return 0
+    step "Rust (rustup — apt indisponível)"
+    local script
+    script="$(mktemp)" || return 0
+    if download "https://sh.rustup.rs" "$script"; then
+        chmod 755 "$script"
+        as_user sh "$script" -y --profile minimal --no-modify-path -c clippy -c rustfmt -c rust-analyzer \
+            && ok "Rust instalado via rustup." \
+            || warn "rustup falhou."
+    else
+        warn "Não consegui baixar o rustup."
+    fi
+    rm -f "$script"
 }
 
 proot_create_user() {
@@ -979,61 +1073,31 @@ proot_configure_ssh() {
     fi
 }
 
-proot_install_ngrok() {
-    step "ngrok"
-    local arch tmp
-    arch="$(arch_map "$(uname -m)" ngrok)" || { warn "ngrok: sem build para $(uname -m)."; return 0; }
-    tmp="$(mktemp -d)" || return 0
-    if download "${NGROK_URL_BASE}-${arch}.tgz" "$tmp/ngrok.tgz" \
-        && tar -xzf "$tmp/ngrok.tgz" -C /usr/local/bin ngrok; then
-        chmod 755 /usr/local/bin/ngrok
-        ok "ngrok instalado."
-        if [[ -n "$NGROK_TOKEN" ]]; then
-            if as_user ngrok config add-authtoken "$NGROK_TOKEN" >/dev/null; then
-                ok "Authtoken do ngrok configurado."
-            else
-                warn "Não consegui salvar o authtoken."
-            fi
+proot_setup_ngrok() {
+    has_cmd ngrok || { warn "ngrok indisponível; pulei o authtoken."; return 0; }
+    if [[ -n "$NGROK_TOKEN" ]]; then
+        if as_user ngrok config add-authtoken "$NGROK_TOKEN" >/dev/null; then
+            ok "Authtoken do ngrok configurado."
         else
-            info "Sem authtoken. Configure depois com: ngrok config add-authtoken SEU_TOKEN"
+            warn "Não consegui salvar o authtoken."
         fi
     else
-        warn "ngrok: falha no download."
+        info "Sem authtoken. Configure depois com: ngrok config add-authtoken SEU_TOKEN"
     fi
-    rm -rf "$tmp"
-}
-
-proot_install_rust() {
-    local script
-    script="$(mktemp)" || return 1
-    if download "https://sh.rustup.rs" "$script"; then
-        chmod 755 "$script"
-        if as_user sh "$script" -y --profile minimal --no-modify-path -c clippy -c rustfmt; then
-            as_user /home/"$USERNAME"/.cargo/bin/rustup component add rust-analyzer >/dev/null 2>&1 \
-                || info "rust-analyzer indisponível para esta arquitetura (opcional)."
-            ok "Rust instalado via rustup."
-            rm -f "$script"
-            return 0
-        fi
-    fi
-    rm -f "$script"
-    warn "rustup falhou; instalando rustc/cargo pelo apt."
-    apt_install rustc cargo
 }
 
 proot_setup_dev_env() {
-    step "Ambiente de desenvolvimento: Rust, Go, Python, Node"
+    step "Ambiente de desenvolvimento: Go, Python, Node, Rust"
     local home="/home/${USERNAME}"
     as_user mkdir -p "$home/go/bin" "$home/.npm-global" "$home/.local/bin"
     has_cmd npm && as_user npm config set prefix "$home/.npm-global"
-    proot_install_rust
     ok "Go (GOPATH=~/go), Python (pip/venv/pipx), Node (npm global em ~/.npm-global) prontos."
 }
 
 proot_install_desktop() {
     [[ "$INSTALL_DESKTOP" == "yes" ]] || return 0
     step "Desktop LXDE (download grande)"
-    install_many apt_install "${DEBIAN_DESKTOP_PKGS[@]}"
+    apt_install_many "${DEBIAN_DESKTOP_PKGS[@]}"
     if has_cmd startlxde; then
         ok "LXDE instalado."
     else
@@ -1051,12 +1115,14 @@ proot_main() {
     [[ -f /etc/debian_version ]] || die "Este estágio é exclusivo do Debian."
     load_answers
     proot_install_packages
-    proot_install_helix_fallback
-    proot_install_fastfetch_fallback
+    proot_fallback_helix
+    proot_fallback_fastfetch
+    proot_fallback_ngrok
     proot_create_user
     proot_configure_fish
     proot_configure_ssh
-    proot_install_ngrok
+    proot_setup_ngrok
+    proot_fallback_rust
     proot_setup_dev_env
     proot_install_desktop
     proot_cleanup
@@ -1075,7 +1141,7 @@ main() {
     esac
 }
 
-# Permite `source tlab-26.sh` para testar funções isoladamente
+# Permite `source tlab26-tx.sh` para testar funções isoladamente
 if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
     main "$@"
 fi
